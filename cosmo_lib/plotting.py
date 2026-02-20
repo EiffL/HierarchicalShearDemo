@@ -191,12 +191,14 @@ def plot_shear_maps(
 def plot_power_spectrum(
     cl_data: dict,
     ell2d: jnp.ndarray,
+    eb_data: dict | None = None,
 ) -> None:
-    """Plot true Cl, estimated pseudo-Cl, and noise level.
+    """Plot true Cl, estimated pseudo-Cl, noise level, and optional E/B diagnostic.
 
     Args:
         cl_data: Dictionary from estimate_pseudo_cl.
         ell2d: (n, n) multipole grid.
+        eb_data: Optional dict from compute_eb_power with cl_E, cl_B, ell_bins.
     """
     fig, ax = plt.subplots(figsize=(8, 6))
 
@@ -211,6 +213,15 @@ def plot_power_spectrum(
     ax.loglog(ell_smooth, cl_true, "k-", lw=2, label=r"True $C_\ell$")
     ax.loglog(ell_bins, np.maximum(cl_hat, 1e-20), "C0o", ms=6, label=r"Pseudo-$C_\ell$")
     ax.axhline(cl_noise, color="C3", ls="--", lw=1.5, label=f"Noise ($N_\\ell$)")
+
+    if eb_data is not None:
+        eb_ell = np.array(eb_data["ell_bins"])
+        cl_E = np.array(eb_data["cl_E"])
+        cl_B = np.array(eb_data["cl_B"])
+        ax.loglog(eb_ell, np.maximum(cl_E, 1e-20), "C2s", ms=5, alpha=0.7,
+                  label=r"True $C_\ell^{EE}$")
+        ax.loglog(eb_ell, np.maximum(cl_B, 1e-20), "C4^", ms=5, alpha=0.7,
+                  label=r"True $C_\ell^{BB}$")
 
     ax.set_xlabel(r"$\ell$", fontsize=13)
     ax.set_ylabel(r"$C_\ell$", fontsize=13)
