@@ -23,23 +23,18 @@ SIGMA_8_TRUE = 0.8
 A0 = 1e-4
 
 # ---------------------------------------------------------------------------
-# Gibbs sampler settings
+# Joint field-level NUTS settings (Pipeline B)
 # ---------------------------------------------------------------------------
-N_GIBBS = 3000
-N_GIBBS_BURN = 500
-MH_PROPOSAL_SIGMA = jnp.array([0.02, 0.02])  # (Omega_m, sigma_8) proposal widths
-
-# Interim prior width (matches per-patch posterior sigma)
-SIGMA_INTERIM = SHAPE_NOISE / np.sqrt(N_GAL_PER_PIX)
-
-# Number of interim samples per patch for importance sampling
-N_PATCH_SAMPLES = 2000
+N_JOINT_WARMUP = 500
+N_JOINT_SAMPLES = 1000
+JOINT_TARGET_ACCEPT = 0.8
+JOINT_MAX_TREE_DEPTH = 8
 
 # ---------------------------------------------------------------------------
 # Classical pipeline NUTS settings
 # ---------------------------------------------------------------------------
 N_NUTS_WARMUP = 500
-N_NUTS_SAMPLES = 2000
+N_NUTS_SAMPLES = 4000
 
 # Ell binning
 N_ELL_BINS = 15

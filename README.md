@@ -1,6 +1,6 @@
 # Hierarchical Shear Inference Demo
 
-Comparing two approaches to cosmological parameter inference from weak gravitational lensing shear data: a classical **pseudo-C&#8467;** power spectrum pipeline and a **hierarchical Gibbs + importance sampling** framework inspired by [Schneider et al. (2015)](https://doi.org/10.1088/0004-637X/807/1/87).
+Comparing two approaches to cosmological parameter inference from weak gravitational lensing shear data: a classical **pseudo-C&#8467;** power spectrum pipeline and a **joint field-level NUTS** sampler that infers the convergence field and cosmological parameters simultaneously.
 
 Both pipelines operate on the same simulated galaxy shear catalog and produce posterior constraints on the matter density parameter &Omega;<sub>m</sub> and the fluctuation amplitude &sigma;<sub>8</sub>, as well as the derived combination S<sub>8</sub> = &sigma;<sub>8</sub>&radic;(&Omega;<sub>m</sub>/0.3).
 
@@ -26,15 +26,13 @@ flowchart LR
         E --> F[Bin E-mode power in ℓ]
         F --> G["NUTS sampling of (S₈, Ωₘ)"]
     end
-    subgraph Pipeline B: Gibbs + IS
+    subgraph Pipeline B: Field-level NUTS
         C --> H[Per-pixel interim posteriors]
-        H --> I[Draw K samples per pixel]
-        I --> J[FFT all K field realizations]
-        J --> K[Per-mode IS marginal likelihood]
-        K --> L["MH sampling of (Ωₘ, σ₈)"]
+        H --> I["Joint NUTS over (z, S₈, Ωₘ)"]
+        I --> J[Posterior mean κ → shear reconstruction]
     end
     G --> M[Compare posteriors]
-    L --> M
+    J --> M
 ```
 
 ## The Physics
@@ -85,25 +83,44 @@ flowchart TD
   <img src="plots/cosmo_comparison_power_spectrum.png" width="65%"/>
 </p>
 
-## Pipeline B: Gibbs + Importance Sampling
+## Pipeline B: Field-level NUTS
 
-The hierarchical approach avoids compressing to a summary statistic, instead marginalizing over the shear field:
+The field-level approach jointly samples the convergence field and cosmological parameters using a **non-centered parameterization** that is amenable to gradient-based NUTS sampling in ~1000 dimensions.
 
-```mermaid
-flowchart TD
-    A["Per-pixel data posteriors: g_p | data ~ N(ε̄_p, σ²/n_gal)"] --> B["Draw K samples per pixel from interim posteriors"]
-    B --> C["FFT each joint field realization → |γ̃ₖˢ|²"]
-    C --> D["Per-mode IS: log p(data|θ) = Σ_k log[(1/K) Σ_s p(γ̃ₖˢ|θ)]"]
-    D --> E["MH proposals on (Ωₘ, σ₈)"]
-    E --> F["Accept/reject with IS marginal likelihood ratio"]
-    F -->|iterate| E
-```
+### From interim posteriors to field-level inference
 
-Because i.i.d. pixel noise produces independent Fourier modes, the marginal likelihood factorizes over ~n² modes, making the IS estimate low-variance even with modest K. A second-order Jensen bias correction further reduces the IS bias from O(1/K) to O(1/K²).
+The key insight from [Schneider et al. (2015)](https://doi.org/10.1088/0004-637X/807/1/87) is that per-patch (per-pixel) posteriors on shear can serve as **sufficient data summaries** for hierarchical cosmological inference. In this demo, each pixel has $n_\mathrm{gal}$ observed ellipticities $\varepsilon_i = \gamma_p + n_i$ with i.i.d. noise $n_i \sim \mathcal{N}(0, \sigma_\varepsilon^2)$. The analytic interim posterior on the shear in pixel $p$ is:
+
+$$\gamma_p \mid \{\varepsilon_i\} \sim \mathcal{N}\!\left(\bar{\varepsilon}_p,\; \sigma_\mathrm{patch}^2\right), \qquad \sigma_\mathrm{patch} = \frac{\sigma_\varepsilon}{\sqrt{n_\mathrm{gal}}}$$
+
+where $\bar{\varepsilon}_p$ is the per-pixel mean ellipticity. This Gaussian interim posterior is the likelihood for the field-level stage: the pixel-averaged data $\bar{\varepsilon}_p$ are sufficient statistics, and the field-level model conditions on them directly.
+
+### Non-centered generative model
+
+Rather than sampling the convergence field $\kappa$ directly (which would be strongly correlated with the cosmological parameters through the power spectrum), we use a **non-centered parameterization** with a white-noise latent field $z$:
+
+$$z_{ij} \sim \mathcal{N}(0, 1) \quad \text{(i.i.d. standard normal on the } n \times n \text{ grid)}$$
+
+$$\tilde{\kappa}(\boldsymbol{\ell}) = \sqrt{\frac{C_\ell(\Omega_m, \sigma_8)}{\mathcal{A}}} \; \tilde{z}(\boldsymbol{\ell})$$
+
+$$\tilde{\gamma}(\boldsymbol{\ell}) = D(\boldsymbol{\ell}) \, \tilde{\kappa}(\boldsymbol{\ell})$$
+
+$$\bar{\varepsilon}_p \sim \mathcal{N}\!\left(\gamma_p,\; \sigma_\mathrm{patch}^2\right)$$
+
+where $\tilde{z} = \mathrm{FFT}(z)$, $\mathcal{A} = (n \, \Delta)^2$ is the survey area, and $\gamma_p = \mathrm{IFFT}(\tilde{\gamma})$ evaluated at pixel $p$. The normalization $\sqrt{C_\ell / \mathcal{A}}$ accounts for the fact that $|\tilde{z}(\boldsymbol{\ell})|^2$ has expectation $n^2$ (from the unnormalized FFT of $n^2$ i.i.d. unit normals), producing the correct field power $\mathbb{E}[|\tilde{\kappa}(\boldsymbol{\ell})|^2] = C_\ell \, n^2 / \mathcal{A}$.
+
+The total parameter space is $n^2 + 2 = 1026$ dimensions (for $n = 32$). The non-centered parameterization decouples the prior on $z$ from the cosmological parameters, making the posterior geometry more amenable to NUTS. Cosmology enters only through the deterministic coloring $\sqrt{C_\ell}$, so the sampler can efficiently adapt its mass matrix to the different scales of the $z$ field and the cosmological parameters.
+
+### NUTS configuration
+
+The joint sampler uses NumPyro's NUTS with:
+- `target_accept_prob=0.8` (slightly lower than the pseudo-C&#8467; pipeline due to the higher dimensionality)
+- `max_tree_depth=8` (sufficient for the moderate correlations in the non-centered parameterization)
+- Same (S<sub>8</sub>, &Omega;<sub>m</sub>) uniform priors as Pipeline A, with &sigma;<sub>8</sub> derived as S<sub>8</sub> / &radic;(&Omega;<sub>m</sub>/0.3)
 
 ## Shear Field Reconstruction
 
-The Gibbs sampler also enables **Wiener-filtered** shear reconstruction, which optimally combines the noisy pixel-level data with the cosmological power spectrum prior:
+The field-level sampler produces **posterior samples of the convergence field** $\kappa$ as a byproduct. The posterior mean $\langle \kappa \rangle$ is then mapped to shear via Kaiser-Squires, providing an optimally denoised reconstruction:
 
 <p align="center">
   <img src="plots/cosmo_comparison_shear_maps.png" width="85%"/>
@@ -115,7 +132,7 @@ The Gibbs sampler also enables **Wiener-filtered** shear reconstruction, which o
 .venv/bin/python cosmology_inference_demo.py
 ```
 
-The virtualenv (symlinked to the parent SHINE project) contains JAX, NumPyro, matplotlib, and scipy. The demo takes ~2 minutes on a modern CPU, dominated by the Gibbs sampler JIT compilation.
+The virtualenv (symlinked to the parent SHINE project) contains JAX, NumPyro, matplotlib, and scipy. The demo takes ~1 minute on a modern CPU.
 
 **Output:** plots saved to `plots/`, verification checks printed to stdout.
 
@@ -127,7 +144,7 @@ flowchart BT
     ps["power_spectrum.py\n─────────\ncl_model(ℓ, Ωₘ, σ₈)"]
     sim["simulation.py\n─────────\nGaussian κ → spin-2 γ\n→ noisy galaxy catalog"]
     cl["classical.py\n─────────\nPseudo-Cℓ estimation\nE/B decomposition\nNUTS inference"]
-    gi["gibbs.py\n─────────\nPer-mode IS likelihood\nMH cosmology sampling\nWiener filtering"]
+    hi["hierarchical.py\n─────────\nNon-centered z → κ → γ\nJoint NUTS inference\nPosterior mean shear"]
     pl["plotting.py\n─────────\nCorner, shear maps\npower spectra, whiskers"]
     ve["verification.py\n─────────\nCI checks, S₈ agreement\nB-mode null test"]
     demo["cosmology_inference_demo.py\n─────────\nEntry point: run both\npipelines and compare"]
@@ -135,11 +152,11 @@ flowchart BT
     config --> ps
     ps --> sim
     ps --> cl
-    ps --> gi
+    ps --> hi
     ps --> pl
     sim --> demo
     cl --> demo
-    gi --> demo
+    hi --> demo
     pl --> demo
     ve --> demo
 ```
@@ -150,7 +167,7 @@ flowchart BT
 | `power_spectrum.py` | Parametric C<sub>&#8467;</sub>(&Omega;<sub>m</sub>, &sigma;<sub>8</sub>) model |
 | `simulation.py` | Gaussian &kappa; field, Kaiser-Squires shear, noisy galaxy catalog |
 | `classical.py` | E-mode pseudo-C<sub>&#8467;</sub> estimation, Gaussian likelihood, NUTS |
-| `gibbs.py` | Per-mode importance sampling, Metropolis-Hastings, Wiener filter |
+| `hierarchical.py` | Non-centered field-level model, joint NUTS over (z, S<sub>8</sub>, &Omega;<sub>m</sub>), posterior mean shear |
 | `plotting.py` | Density contour corner plots, shear maps, power spectra, whisker plots |
 | `verification.py` | Truth-in-CI checks, cross-method S<sub>8</sub> agreement, B-mode null test |
 
@@ -164,13 +181,8 @@ flowchart BT
 | Shape noise | 0.26 per component | Intrinsic ellipticity dispersion |
 | &Omega;<sub>m</sub> (true) | 0.3 | Matter density |
 | &sigma;<sub>8</sub> (true) | 0.8 | Fluctuation amplitude |
-| NUTS samples | 500 warmup + 2000 | Classical pipeline |
-| MH iterations | 3000 (500 burn-in) | Gibbs pipeline |
-
-## Known Issues
-
-- The **Gibbs sampler** currently shows a systematic offset in &Omega;<sub>m</sub> (biased high), likely due to the MH proposal width or the interim-to-field IS reweighting. The S<sub>8</sub> constraint is more robust. Improving the Gibbs sampler is the next development priority.
-- The demo uses a **simplified power spectrum model** (not a Boltzmann code), so absolute parameter values should not be compared to real survey results.
+| NUTS samples (pseudo-C&#8467;) | 500 warmup + 4000 | Classical pipeline |
+| NUTS samples (field-level) | 500 warmup + 1000 | Hierarchical pipeline (1026 dims) |
 
 ## References
 

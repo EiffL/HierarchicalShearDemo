@@ -22,11 +22,11 @@ This is a cosmological weak-lensing inference demo comparing two approaches to c
 - `power_spectrum.py` — `cl_model()`: parametric angular power spectrum C_l(Omega_m, sigma_8). Used by both pipelines and plotting.
 - `simulation.py` — Generates a Gaussian convergence field kappa, derives spin-2 shear via Kaiser-Squires (using Hermitian FFT of the real kappa field), and produces a noisy galaxy ellipticity catalog.
 - `classical.py` — **Pipeline A**: Estimates E-mode pseudo-Cl power spectrum with proper E/B decomposition, bins with mode-count filtering (`n_min_modes=5`), then runs NumPyro NUTS to sample (S_8, Omega_m) with uniform priors. Also contains `compute_eb_power()` for E/B diagnostic.
-- `gibbs.py` — **Pipeline B**: Per-mode IS-marginalized Metropolis-Hastings sampler using `jax.lax.scan`. Pre-computes FFT power of K joint field samples, then evaluates the per-mode factorized IS marginal likelihood with second-order Jensen bias correction. Contains `GibbsState`/`GibbsOutput` NamedTuples for the scan carry/output. Also provides `wiener_filter_field()` for shear reconstruction.
+- `hierarchical.py` — **Pipeline B**: Joint field-level NUTS sampler using a non-centered parameterization. Samples a white-noise field z (n×n) and cosmological parameters (S_8, Omega_m) jointly. The forward model colors z by sqrt(C_l/area) to produce kappa, applies Kaiser-Squires for shear, and conditions on per-pixel mean ellipticities. Also provides `posterior_mean_shear()` for map reconstruction from posterior kappa samples.
 - `plotting.py` — Corner plots with density contours (68%/95%), shear map comparisons, power spectrum plots, whisker plots. Saves PNGs to `plots/`.
-- `verification.py` — Quantitative checks: truth-in-CI, cross-method S_8 agreement, MH acceptance rate, B-mode null test.
+- `verification.py` — Quantitative checks: truth-in-CI, cross-method S_8 agreement, B-mode null test.
 
-**Key dependency flow:** `config` <- `power_spectrum` <- `simulation`, `classical`, `gibbs` <- `plotting`, `verification`.
+**Key dependency flow:** `config` <- `power_spectrum` <- `simulation`, `classical`, `hierarchical` <- `plotting`, `verification`.
 
 ## Key Implementation Details
 
@@ -36,7 +36,10 @@ This is a cosmological weak-lensing inference demo comparing two approaches to c
 
 **Classical model parametrization:** Samples (S_8, Omega_m) directly with uniform priors, derives sigma_8 = S_8 / sqrt(Omega_m / 0.3). This avoids prior-induced bias on S_8 that arises from sampling (Omega_m, sigma_8) with uniform priors.
 
+**Field-level non-centered parameterization:** The latent field z ~ N(0, I) is colored in Fourier space: kappa_fft = sqrt(C_l / area) * fft2(z). The sqrt(C_l / area) normalization (not sqrt(C_l * n^2 / area)) is correct because fft2(z) has E[|.|^2] = n^2 per mode for real iid z, yielding E[|kappa_fft|^2] = C_l * n^2 / area matching the simulation convention. Both pipelines use the same (S_8, Omega_m) uniform priors.
+
 ## Known Issues
 
-- The **Gibbs sampler** (Pipeline B) shows a systematic offset in Omega_m (biased high). MH acceptance rate is ~70%, which is reasonable, but the S_8 constraint, while better-centered, is much tighter than the classical pipeline. Diagnosing and fixing the Gibbs IS likelihood is the next development priority.
 - The classical pipeline is **verified unbiased** via multi-seed testing (20 realizations at 128x128, 100 gal/pix): S_8 bias < 0.003, 20/20 coverage at 95% CI, zero NUTS divergences.
+- Both pipelines agree on S_8 to ~2-3%, with the field-level pipeline producing slightly tighter constraints (retains all Fourier modes vs 11 coarse bins in pseudo-Cl).
+- The demo uses a **simplified power spectrum model** (not a Boltzmann code), so absolute parameter values should not be compared to real survey results.

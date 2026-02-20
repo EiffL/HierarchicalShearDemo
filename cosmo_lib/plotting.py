@@ -6,18 +6,20 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .config import N_GIBBS_BURN, OMEGA_M_TRUE, SIGMA_8_TRUE
-from .gibbs import GibbsOutput
+from .config import OMEGA_M_TRUE, SIGMA_8_TRUE
 from .power_spectrum import cl_model
 
 
-def _plot_contours(ax, x, y, color, label, n_bins=40):
+def _plot_contours(ax, x, y, color, label, n_bins=40, xy_range=None):
     """Plot 68% and 95% density contours from 2D samples."""
     from scipy.ndimage import gaussian_filter
 
     # 2D histogram
-    x_range = (np.percentile(x, 0.5), np.percentile(x, 99.5))
-    y_range = (np.percentile(y, 0.5), np.percentile(y, 99.5))
+    if xy_range is not None:
+        x_range, y_range = xy_range
+    else:
+        x_range = (np.percentile(x, 0.5), np.percentile(x, 99.5))
+        y_range = (np.percentile(y, 0.5), np.percentile(y, 99.5))
     H, xedges, yedges = np.histogram2d(
         x, y, bins=n_bins, range=[x_range, y_range],
     )
@@ -42,26 +44,25 @@ def _plot_contours(ax, x, y, color, label, n_bins=40):
 
 def plot_corner_comparison(
     classical_samples: dict,
-    gibbs_chain: GibbsOutput,
-    n_burn: int = N_GIBBS_BURN,
+    hierarchical_samples: dict,
 ) -> None:
     """Overlay (Omega_m, sigma_8, S_8) posteriors from both methods.
 
     Args:
         classical_samples: Dict with 'omega_m' and 'sigma_8' arrays from NUTS.
-        gibbs_chain: GibbsOutput from the Gibbs sampler.
-        n_burn: Number of burn-in samples to discard from Gibbs chain.
+        hierarchical_samples: Dict with 'omega_m' and 'sigma_8' arrays from
+            the field-level NUTS sampler.
     """
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
     om_cl = np.array(classical_samples["omega_m"])
     s8_cl = np.array(classical_samples["sigma_8"])
-    om_gi = np.array(gibbs_chain.omega_m[n_burn:])
-    s8_gi = np.array(gibbs_chain.sigma_8[n_burn:])
+    om_hi = np.array(hierarchical_samples["omega_m"])
+    s8_hi = np.array(hierarchical_samples["sigma_8"])
 
     # Derived S_8
     s8_derived_cl = s8_cl * np.sqrt(om_cl / 0.3)
-    s8_derived_gi = s8_gi * np.sqrt(om_gi / 0.3)
+    s8_derived_hi = s8_hi * np.sqrt(om_hi / 0.3)
     s8_true_val = SIGMA_8_TRUE * np.sqrt(OMEGA_M_TRUE / 0.3)
 
     # --- Top row: marginals ---
@@ -69,29 +70,19 @@ def plot_corner_comparison(
     # Omega_m marginal
     ax = axes[0, 0]
     ax.hist(om_cl, bins=40, density=True, alpha=0.6, color="C0", label="Pseudo-Cℓ")
-    ax.hist(om_gi, bins=40, density=True, alpha=0.6, color="C1", label="Gibbs+IS")
+    ax.hist(om_hi, bins=40, density=True, alpha=0.6, color="C1", label="Field-level NUTS")
     ax.axvline(OMEGA_M_TRUE, color="k", ls="--", lw=1.5, label="Truth")
     ax.set_xlabel(r"$\Omega_m$")
     ax.set_ylabel("Density")
     ax.legend(fontsize=9)
     ax.set_title(r"$\Omega_m$ marginal")
 
-    # sigma_8 marginal
-    ax = axes[0, 1]
-    ax.hist(s8_cl, bins=40, density=True, alpha=0.6, color="C0", label="Pseudo-Cℓ")
-    ax.hist(s8_gi, bins=40, density=True, alpha=0.6, color="C1", label="Gibbs+IS")
-    ax.axvline(SIGMA_8_TRUE, color="k", ls="--", lw=1.5, label="Truth")
-    ax.set_xlabel(r"$\sigma_8$")
-    ax.set_ylabel("Density")
-    ax.legend(fontsize=9)
-    ax.set_title(r"$\sigma_8$ marginal")
-
     # S_8 marginal
-    ax = axes[0, 2]
+    ax = axes[0, 1]
     ax.hist(s8_derived_cl, bins=40, density=True, alpha=0.6, color="C0",
             label="Pseudo-Cℓ")
-    ax.hist(s8_derived_gi, bins=40, density=True, alpha=0.6, color="C1",
-            label="Gibbs+IS")
+    ax.hist(s8_derived_hi, bins=40, density=True, alpha=0.6, color="C1",
+            label="Field-level NUTS")
     ax.axvline(s8_true_val, color="k", ls="--", lw=1.5, label="Truth")
     ax.set_xlabel(r"$S_8 = \sigma_8 \sqrt{\Omega_m / 0.3}$")
     ax.set_ylabel("Density")
@@ -99,11 +90,24 @@ def plot_corner_comparison(
     ax.set_title(r"$S_8$ marginal")
 
     # --- Bottom row: joint contours ---
+    # Compute shared axis ranges from both sample sets
+    om_all = np.concatenate([om_cl, om_hi])
+    s8_all = np.concatenate([s8_cl, s8_hi])
+    s8d_all = np.concatenate([s8_derived_cl, s8_derived_hi])
+
+    om_s8_range = (
+        (np.percentile(om_all, 0.5), np.percentile(om_all, 99.5)),
+        (np.percentile(s8_all, 0.5), np.percentile(s8_all, 99.5)),
+    )
+    om_s8d_range = (
+        (np.percentile(om_all, 0.5), np.percentile(om_all, 99.5)),
+        (np.percentile(s8d_all, 0.5), np.percentile(s8d_all, 99.5)),
+    )
 
     # Omega_m vs sigma_8
     ax = axes[1, 0]
-    _plot_contours(ax, om_cl, s8_cl, "C0", "Pseudo-Cℓ")
-    _plot_contours(ax, om_gi, s8_gi, "C1", "Gibbs+IS")
+    _plot_contours(ax, om_cl, s8_cl, "C0", "Pseudo-Cℓ", xy_range=om_s8_range)
+    _plot_contours(ax, om_hi, s8_hi, "C1", "Field-level NUTS", xy_range=om_s8_range)
     ax.plot(OMEGA_M_TRUE, SIGMA_8_TRUE, "k+", ms=15, mew=2, label="Truth")
     om_line = np.linspace(0.10, 0.60, 100)
     s8_line = s8_true_val / np.sqrt(om_line / 0.3)
@@ -115,26 +119,16 @@ def plot_corner_comparison(
 
     # S_8 vs Omega_m
     ax = axes[1, 1]
-    _plot_contours(ax, om_cl, s8_derived_cl, "C0", "Pseudo-Cℓ")
-    _plot_contours(ax, om_gi, s8_derived_gi, "C1", "Gibbs+IS")
+    _plot_contours(ax, om_cl, s8_derived_cl, "C0", "Pseudo-Cℓ", xy_range=om_s8d_range)
+    _plot_contours(ax, om_hi, s8_derived_hi, "C1", "Field-level NUTS", xy_range=om_s8d_range)
     ax.plot(OMEGA_M_TRUE, s8_true_val, "k+", ms=15, mew=2, label="Truth")
     ax.set_xlabel(r"$\Omega_m$")
     ax.set_ylabel(r"$S_8$")
     ax.legend(fontsize=9)
     ax.set_title(r"$\Omega_m$ vs $S_8$")
 
-    # S_8 vs sigma_8
-    ax = axes[1, 2]
-    _plot_contours(ax, s8_cl, s8_derived_cl, "C0", "Pseudo-Cℓ")
-    _plot_contours(ax, s8_gi, s8_derived_gi, "C1", "Gibbs+IS")
-    ax.plot(SIGMA_8_TRUE, s8_true_val, "k+", ms=15, mew=2, label="Truth")
-    ax.set_xlabel(r"$\sigma_8$")
-    ax.set_ylabel(r"$S_8$")
-    ax.legend(fontsize=9)
-    ax.set_title(r"$\sigma_8$ vs $S_8$")
-
     plt.suptitle(
-        "Cosmological Posterior Comparison: Pseudo-Cℓ vs Gibbs+IS",
+        "Cosmological Posterior Comparison: Pseudo-Cℓ vs Field-level NUTS",
         fontsize=14,
         fontweight="bold",
     )
@@ -151,14 +145,14 @@ def plot_shear_maps(
     gamma1_recon: jnp.ndarray,
     gamma2_recon: jnp.ndarray,
 ) -> None:
-    """Plot true, observed, and Wiener-filtered shear maps.
+    """Plot true, observed, and reconstructed shear maps.
 
     Args:
         sim: Simulation dictionary (contains gamma1, gamma2 true fields).
         gamma1_obs: (n, n) pixel-averaged observed gamma1.
         gamma2_obs: (n, n) pixel-averaged observed gamma2.
-        gamma1_recon: (n, n) reconstructed gamma1 (Wiener-filtered).
-        gamma2_recon: (n, n) reconstructed gamma2 (Wiener-filtered).
+        gamma1_recon: (n, n) reconstructed gamma1.
+        gamma2_recon: (n, n) reconstructed gamma2.
     """
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
@@ -187,7 +181,7 @@ def plot_shear_maps(
         vmin=vmin1,
         vmax=vmax1,
     )
-    axes[0, 2].set_title(r"Wiener-filtered $\gamma_1$")
+    axes[0, 2].set_title(r"NUTS-Reconstructed $\gamma_1$")
     plt.colorbar(im, ax=axes[0, 2])
 
     # gamma2 row
@@ -210,11 +204,11 @@ def plot_shear_maps(
         vmin=vmin2,
         vmax=vmax2,
     )
-    axes[1, 2].set_title(r"Wiener-filtered $\gamma_2$")
+    axes[1, 2].set_title(r"NUTS-Reconstructed $\gamma_2$")
     plt.colorbar(im, ax=axes[1, 2])
 
     plt.suptitle(
-        "Shear Field: True | Observed | Gibbs-Reconstructed",
+        "Shear Field: True | Observed | NUTS-Reconstructed",
         fontsize=14,
         fontweight="bold",
     )

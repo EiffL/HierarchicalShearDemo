@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """Cosmological Inference Comparison Demo.
 
-Demonstrates that per-patch shear posteriors from SHINE can be combined into
-cosmological constraints via Gibbs sampling + importance sampling (IS), and
-that these constraints are consistent with a classical pseudo-Cl pipeline.
+Demonstrates two approaches to constraining (Omega_m, sigma_8) from simulated
+galaxy shear data:
 
-Following Schneider et al. (2015), this script:
-  1. Simulates a Gaussian convergence field kappa and derives shear gamma via
-     Kaiser-Squires, then generates a noisy galaxy ellipticity catalog.
-  2. Pipeline A (Classical Pseudo-Cl): bins ellipticities into pixels,
+  1. Pipeline A (Classical Pseudo-Cl): bins ellipticities into pixels,
      estimates E-mode power spectrum, runs NUTS over (Omega_m, sigma_8).
-  3. Pipeline B (Hierarchical Gibbs): runs a Gibbs sampler that alternates
-     Wiener-filter shear sampling with Metropolis cosmology updates.
-  4. Compares both posteriors via corner plots, shear maps, and power spectra.
+  2. Pipeline B (Field-level NUTS): jointly samples a non-centered convergence
+     field z and cosmological parameters using NUTS in 1026 dimensions.
 
 Usage:
     python cosmology_inference_demo.py
@@ -34,22 +29,20 @@ from cosmo_lib.config import (
     GRID_SIZE,
     N_ELL_BINS,
     N_GAL_PER_PIX,
-    N_GIBBS,
-    N_GIBBS_BURN,
+    N_JOINT_SAMPLES,
+    N_JOINT_WARMUP,
     N_NUTS_SAMPLES,
     N_NUTS_WARMUP,
-    N_PATCH_SAMPLES,
     PIXEL_SCALE,
     SEED,
     SHAPE_NOISE,
 )
 from cosmo_lib.simulation import simulate_shear_catalog
 from cosmo_lib.classical import estimate_pseudo_cl, compute_eb_power, run_classical_pipeline
-from cosmo_lib.gibbs import (
-    compute_patch_posteriors,
-    draw_patch_samples,
-    gibbs_sampler,
-    wiener_filter_field,
+from cosmo_lib.hierarchical import (
+    _fourier_setup,
+    posterior_mean_shear,
+    run_hierarchical_pipeline,
 )
 from cosmo_lib.plotting import (
     plot_corner_comparison,
@@ -64,11 +57,11 @@ def main() -> None:
     """Run the full cosmological inference comparison demo."""
     print("=" * 70)
     print("SHINE — Cosmological Inference Comparison Demo")
-    print("Pseudo-Cℓ (NUTS) vs Gibbs + Importance Sampling")
+    print("Pseudo-Cℓ (NUTS) vs Field-level NUTS")
     print("=" * 70)
 
     key = jax.random.PRNGKey(SEED)
-    k_sim, k_cl, k_gibbs, k_s1, k_s2 = jax.random.split(key, 5)
+    k_sim, k_cl, k_hier = jax.random.split(key, 3)
 
     # ------------------------------------------------------------------
     # 1. Simulate
@@ -116,50 +109,39 @@ def main() -> None:
     print(f"  Classical pipeline done in {time.time() - t0:.1f}s")
 
     # ------------------------------------------------------------------
-    # 3. Pipeline B: Gibbs + IS
+    # 3. Pipeline B: Field-level NUTS
     # ------------------------------------------------------------------
     print("\n" + "-" * 70)
-    print("Pipeline B: Hierarchical Gibbs + Importance Sampling")
+    print("Pipeline B: Field-level NUTS (joint z + cosmology)")
     print("-" * 70)
 
     t0 = time.time()
 
-    # Per-patch posteriors
-    patch = compute_patch_posteriors(
-        sim["eps1"], sim["eps2"], SHAPE_NOISE, N_GAL_PER_PIX
-    )
-    print(f"  Patch posterior sigma = {patch['sigma_patch']:.6f}")
+    # Per-pixel mean shear and noise level
+    mean1 = jnp.mean(sim["eps1"], axis=-1)
+    mean2 = jnp.mean(sim["eps2"], axis=-1)
+    sigma_patch = SHAPE_NOISE / jnp.sqrt(N_GAL_PER_PIX)
+    print(f"  Patch posterior sigma = {float(sigma_patch):.6f}")
 
-    # Draw K independent samples per pixel from interim posteriors
-    print(f"  Drawing {N_PATCH_SAMPLES} interim posterior samples per pixel...")
-    samples1 = draw_patch_samples(k_s1, patch["mean1"], patch["sigma_patch"], N_PATCH_SAMPLES)
-    samples2 = draw_patch_samples(k_s2, patch["mean2"], patch["sigma_patch"], N_PATCH_SAMPLES)
+    # Pre-compute Fourier grids
+    fourier = _fourier_setup(GRID_SIZE, PIXEL_SCALE)
 
-    # Run MH sampler with per-mode IS marginal likelihood
-    print(f"  Running MH sampler ({N_GIBBS} iterations, "
-          f"burn-in {N_GIBBS_BURN})...")
+    print(f"  Running joint NUTS ({N_JOINT_WARMUP} warmup + "
+          f"{N_JOINT_SAMPLES} samples, {GRID_SIZE}x{GRID_SIZE}+2 = "
+          f"{GRID_SIZE*GRID_SIZE+2} dims)...")
     print("  (First call includes JIT compilation)")
-    gibbs_state, gibbs_chain = gibbs_sampler(
-        k_gibbs,
-        samples1,
-        samples2,
-        sim["ell2d"],
+    hierarchical_samples = run_hierarchical_pipeline(
+        mean1,
+        mean2,
+        float(sigma_patch),
+        k_hier,
+        fourier=fourier,
     )
-    # Block until done
-    jax.block_until_ready(gibbs_chain.omega_m)
-    print(f"  MH sampler done in {time.time() - t0:.1f}s")
-    acc_rate = float(gibbs_state.n_accepted) / N_GIBBS * 100
-    print(f"  MH acceptance rate: {acc_rate:.1f}%")
+    jax.block_until_ready(hierarchical_samples["omega_m"])
+    print(f"  Field-level NUTS done in {time.time() - t0:.1f}s")
 
-    # Wiener-filtered shear reconstruction for visualization
-    om_post = float(jnp.mean(gibbs_chain.omega_m[N_GIBBS_BURN:]))
-    s8_post = float(jnp.mean(gibbs_chain.sigma_8[N_GIBBS_BURN:]))
-    gamma1_recon = wiener_filter_field(
-        patch["mean1"], sim["ell2d"], om_post, s8_post, patch["sigma_patch"]
-    )
-    gamma2_recon = wiener_filter_field(
-        patch["mean2"], sim["ell2d"], om_post, s8_post, patch["sigma_patch"]
-    )
+    # Posterior mean shear reconstruction for visualization
+    gamma1_recon, gamma2_recon = posterior_mean_shear(hierarchical_samples, fourier)
 
     # ------------------------------------------------------------------
     # 4. Plots
@@ -168,7 +150,7 @@ def main() -> None:
     print("Generating comparison plots")
     print("-" * 70)
 
-    plot_corner_comparison(classical_samples, gibbs_chain)
+    plot_corner_comparison(classical_samples, hierarchical_samples)
     plot_shear_maps(
         sim,
         cl_data["gamma1_obs"],
@@ -182,7 +164,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # 5. Verification
     # ------------------------------------------------------------------
-    run_verification(classical_samples, gibbs_chain, gibbs_state, eb_data=eb_data)
+    run_verification(classical_samples, hierarchical_samples, eb_data=eb_data)
 
     print("\nDone.")
 
