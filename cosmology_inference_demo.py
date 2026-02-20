@@ -41,7 +41,7 @@ from cosmo_lib.simulation import simulate_shear_catalog
 from cosmo_lib.classical import estimate_pseudo_cl, compute_eb_power, run_classical_pipeline
 from cosmo_lib.hierarchical import (
     _fourier_setup,
-    posterior_mean_shear,
+    posterior_sample_shear,
     run_hierarchical_pipeline,
 )
 from cosmo_lib.plotting import (
@@ -141,7 +141,7 @@ def main() -> None:
     print(f"  Field-level NUTS done in {time.time() - t0:.1f}s")
 
     # Posterior mean shear reconstruction for visualization
-    gamma1_recon, gamma2_recon = posterior_mean_shear(hierarchical_samples, fourier)
+    gamma1_recon, gamma2_recon = posterior_sample_shear(hierarchical_samples, fourier, index=-1)
 
     # ------------------------------------------------------------------
     # 4. Plots
@@ -159,7 +159,7 @@ def main() -> None:
         gamma2_recon,
     )
     plot_power_spectrum(cl_data, sim["ell2d"], eb_data=eb_data)
-    plot_shear_whiskers(sim)
+    plot_shear_whiskers(sim, stride=max(1, GRID_SIZE // 32))
 
     # ------------------------------------------------------------------
     # 5. Verification

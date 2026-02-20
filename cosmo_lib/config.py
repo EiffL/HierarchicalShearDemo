@@ -8,8 +8,8 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Grid / survey settings
 # ---------------------------------------------------------------------------
-GRID_SIZE = 32  # pixels per side
-PIXEL_SCALE = 2.0  # arcmin / pixel
+GRID_SIZE = 128     # pixels per side
+PIXEL_SCALE = 1.0   # arcmin / pixel
 N_GAL_PER_PIX = 30  # galaxies per pixel
 SHAPE_NOISE = 0.26  # per-component intrinsic shape noise
 
@@ -26,7 +26,7 @@ A0 = 1e-4
 # Joint field-level NUTS settings (Pipeline B)
 # ---------------------------------------------------------------------------
 N_JOINT_WARMUP = 500
-N_JOINT_SAMPLES = 1000
+N_JOINT_SAMPLES = 2000
 JOINT_TARGET_ACCEPT = 0.8
 JOINT_MAX_TREE_DEPTH = 8
 
@@ -34,7 +34,7 @@ JOINT_MAX_TREE_DEPTH = 8
 # Classical pipeline NUTS settings
 # ---------------------------------------------------------------------------
 N_NUTS_WARMUP = 500
-N_NUTS_SAMPLES = 4000
+N_NUTS_SAMPLES = 2000
 
 # Ell binning
 N_ELL_BINS = 15

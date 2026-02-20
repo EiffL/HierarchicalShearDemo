@@ -181,7 +181,7 @@ def plot_shear_maps(
         vmin=vmin1,
         vmax=vmax1,
     )
-    axes[0, 2].set_title(r"NUTS-Reconstructed $\gamma_1$")
+    axes[0, 2].set_title(r"NUTS Sample $\gamma_1$")
     plt.colorbar(im, ax=axes[0, 2])
 
     # gamma2 row
@@ -204,11 +204,11 @@ def plot_shear_maps(
         vmin=vmin2,
         vmax=vmax2,
     )
-    axes[1, 2].set_title(r"NUTS-Reconstructed $\gamma_2$")
+    axes[1, 2].set_title(r"NUTS Sample $\gamma_2$")
     plt.colorbar(im, ax=axes[1, 2])
 
     plt.suptitle(
-        "Shear Field: True | Observed | NUTS-Reconstructed",
+        "Shear Field: True | Observed | NUTS Sample",
         fontsize=14,
         fontweight="bold",
     )

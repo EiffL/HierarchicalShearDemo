@@ -197,25 +197,27 @@ def run_hierarchical_pipeline(
     }
 
 
-def posterior_mean_shear(
+def posterior_sample_shear(
     samples: dict,
     fourier: dict,
+    index: int = 0,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Compute mean reconstructed shear from posterior kappa samples.
+    """Compute reconstructed shear from a single posterior kappa sample.
 
-    Takes the posterior mean kappa, applies Kaiser-Squires to get shear.
+    Takes one posterior kappa sample, applies Kaiser-Squires to get shear.
 
     Args:
         samples: Dictionary with 'kappa' array of shape (n_samples, n, n).
         fourier: Pre-computed Fourier grids.
+        index: Which posterior sample to use.
 
     Returns:
         Tuple (gamma1_recon, gamma2_recon), each (n, n).
     """
-    kappa_mean = jnp.mean(samples["kappa"], axis=0)
+    kappa_sample = samples["kappa"][index]
     D_ell = fourier["D_ell"]
 
-    kappa_fft = jnp.fft.fft2(kappa_mean)
+    kappa_fft = jnp.fft.fft2(kappa_sample)
     gamma_fft = D_ell * kappa_fft
     gamma = jnp.fft.ifft2(gamma_fft)
 
