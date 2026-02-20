@@ -44,7 +44,7 @@ from cosmo_lib.config import (
     SHAPE_NOISE,
 )
 from cosmo_lib.simulation import simulate_shear_catalog
-from cosmo_lib.classical import estimate_pseudo_cl, run_classical_pipeline
+from cosmo_lib.classical import estimate_pseudo_cl, compute_eb_power, run_classical_pipeline
 from cosmo_lib.gibbs import (
     compute_patch_posteriors,
     draw_patch_samples,
@@ -55,6 +55,7 @@ from cosmo_lib.plotting import (
     plot_corner_comparison,
     plot_power_spectrum,
     plot_shear_maps,
+    plot_shear_whiskers,
 )
 from cosmo_lib.verification import run_verification
 
@@ -79,6 +80,12 @@ def main() -> None:
     print(f"  kappa rms = {float(jnp.std(sim['kappa'])):.6f}")
     print(f"  gamma rms = {float(jnp.std(sim['gamma1'])):.6f}")
     print(f"  Simulation done in {time.time() - t0:.1f}s")
+
+    # E/B diagnostic on true (noiseless) shear
+    eb_data = compute_eb_power(
+        sim["gamma1"], sim["gamma2"], GRID_SIZE, PIXEL_SCALE
+    )
+    print(f"  E/B check: mean B/E = {float(jnp.mean(jnp.abs(eb_data['cl_B'])) / jnp.mean(eb_data['cl_E'])):.6f}")
 
     # ------------------------------------------------------------------
     # 2. Pipeline A: Classical Pseudo-Cl
@@ -169,12 +176,13 @@ def main() -> None:
         gamma1_recon,
         gamma2_recon,
     )
-    plot_power_spectrum(cl_data, sim["ell2d"])
+    plot_power_spectrum(cl_data, sim["ell2d"], eb_data=eb_data)
+    plot_shear_whiskers(sim)
 
     # ------------------------------------------------------------------
     # 5. Verification
     # ------------------------------------------------------------------
-    run_verification(classical_samples, gibbs_chain, gibbs_state)
+    run_verification(classical_samples, gibbs_chain, gibbs_state, eb_data=eb_data)
 
     print("\nDone.")
 
