@@ -31,6 +31,15 @@ JOINT_TARGET_ACCEPT = 0.8
 JOINT_MAX_TREE_DEPTH = 8
 
 # ---------------------------------------------------------------------------
+# Per-pixel GMM variational inference settings
+# ---------------------------------------------------------------------------
+N_GMM_COMPONENTS = 2
+N_VI_STEPS = 2000
+VI_LR = 1e-3
+N_ELBO_SAMPLES = 32
+INTERIM_PRIOR_SIGMA = 0.15  # isotropic Gaussian interim prior on g per component
+
+# ---------------------------------------------------------------------------
 # Classical pipeline NUTS settings
 # ---------------------------------------------------------------------------
 N_NUTS_WARMUP = 500

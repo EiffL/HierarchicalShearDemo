@@ -26,6 +26,7 @@ from .config import (
     PIXEL_SCALE,
 )
 from .power_spectrum import cl_model
+from .vi_gmm import fit_all_pixels, gmm_log_prob_minus_interim_grid
 
 
 def _fourier_setup(n: int, delta: float) -> dict:
@@ -64,8 +65,8 @@ def z_to_shear(
     omega_m: float,
     sigma_8: float,
     fourier: dict,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Differentiable forward model: white noise z -> (kappa, gamma1, gamma2).
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Differentiable forward model: white noise z -> (kappa, gamma1, gamma2, g1, g2).
 
     Args:
         z: (n, n) iid standard normal field.
@@ -74,7 +75,7 @@ def z_to_shear(
         fourier: Pre-computed Fourier grids from _fourier_setup.
 
     Returns:
-        Tuple (kappa, gamma1, gamma2), each (n, n).
+        Tuple (kappa, gamma1, gamma2, g1, g2), each (n, n).
     """
     n = fourier["n"]
     area = fourier["area"]
@@ -100,26 +101,26 @@ def z_to_shear(
     gamma1 = jnp.real(gamma)
     gamma2 = jnp.imag(gamma)
 
-    return kappa, gamma1, gamma2
+    # Reduced shear
+    g1 = gamma1 / (1.0 - kappa)
+    g2 = gamma2 / (1.0 - kappa)
+
+    return kappa, gamma1, gamma2, g1, g2
 
 
 def hierarchical_model(
-    mean1: jnp.ndarray,
-    mean2: jnp.ndarray,
-    sigma_patch: float,
+    gmm_params,
     fourier: dict,
     n: int,
 ) -> None:
-    """NumPyro model for joint field-level inference.
+    """NumPyro model for joint field-level inference with GMM likelihood.
 
     Samples z (white noise field) and cosmological parameters jointly,
-    then deterministically maps to shear and conditions on observed
-    per-pixel mean ellipticities.
+    maps to reduced shear, and evaluates the pre-fitted per-pixel GMM
+    log-probability as the likelihood.
 
     Args:
-        mean1: (n, n) observed mean ellipticity component 1.
-        mean2: (n, n) observed mean ellipticity component 2.
-        sigma_patch: Per-pixel noise standard deviation.
+        gmm_params: Pre-fitted GMMParams with shapes (n, n, K, ...).
         fourier: Pre-computed Fourier grids.
         n: Grid size.
     """
@@ -130,36 +131,40 @@ def hierarchical_model(
 
     z = numpyro.sample("z", dist.Normal(jnp.zeros((n, n)), 1.0).to_event(2))
 
-    kappa, gamma1, gamma2 = z_to_shear(z, omega_m, sigma_8, fourier)
+    kappa, gamma1, gamma2, g1, g2 = z_to_shear(z, omega_m, sigma_8, fourier)
     numpyro.deterministic("kappa", kappa)
 
-    numpyro.sample("obs1", dist.Normal(gamma1, sigma_patch).to_event(2), obs=mean1)
-    numpyro.sample("obs2", dist.Normal(gamma2, sigma_patch).to_event(2), obs=mean2)
+    # log q(g) - log p_interim(g) recovers the data log-likelihood
+    # (up to a constant), removing the interim prior used during VI
+    log_lik = gmm_log_prob_minus_interim_grid(gmm_params, g1, g2)
+    numpyro.factor("gmm_likelihood", jnp.sum(log_lik))
 
 
 def run_hierarchical_pipeline(
-    mean1: jnp.ndarray,
-    mean2: jnp.ndarray,
-    sigma_patch: float,
+    eps1: jnp.ndarray,
+    eps2: jnp.ndarray,
     key: jax.Array,
     fourier: dict | None = None,
     n: int = GRID_SIZE,
     delta: float = PIXEL_SCALE,
+    sigma: float | None = None,
     num_warmup: int = N_JOINT_WARMUP,
     num_samples: int = N_JOINT_SAMPLES,
     target_accept: float = JOINT_TARGET_ACCEPT,
     max_tree_depth: int = JOINT_MAX_TREE_DEPTH,
 ) -> dict:
-    """Run joint field-level NUTS inference.
+    """Run joint field-level NUTS inference with GMM VI pre-step.
+
+    First fits per-pixel GMMs to approximate the Möbius lensing posterior,
+    then runs NUTS with the GMM likelihood.
 
     Args:
-        mean1: (n, n) observed mean ellipticity component 1.
-        mean2: (n, n) observed mean ellipticity component 2.
-        sigma_patch: Per-pixel noise standard deviation.
+        eps1, eps2: (n, n, n_gal) observed ellipticities.
         key: JAX PRNG key.
         fourier: Pre-computed Fourier grids (computed if None).
         n: Grid size.
         delta: Pixel scale in arcmin.
+        sigma: Shape noise (uses config default if None).
         num_warmup: NUTS warmup iterations.
         num_samples: NUTS post-warmup samples.
         target_accept: Target acceptance probability.
@@ -169,9 +174,21 @@ def run_hierarchical_pipeline(
         Dictionary with 'omega_m', 'sigma_8', 'S_8', 'kappa' arrays.
         (z samples are dropped to save memory.)
     """
+    from .config import SHAPE_NOISE
+
+    if sigma is None:
+        sigma = SHAPE_NOISE
     if fourier is None:
         fourier = _fourier_setup(n, delta)
 
+    k_vi, k_nuts = jax.random.split(key)
+
+    # Step 1: Fit per-pixel GMMs
+    print("  Fitting per-pixel GMMs (VI)...")
+    gmm_params = fit_all_pixels(eps1, eps2, k_vi, sigma)
+    print("  GMM VI complete.")
+
+    # Step 2: Run NUTS with GMM likelihood
     kernel = NUTS(
         hierarchical_model,
         target_accept_prob=target_accept,
@@ -184,7 +201,7 @@ def run_hierarchical_pipeline(
         num_chains=1,
         progress_bar=True,
     )
-    mcmc.run(key, mean1, mean2, sigma_patch, fourier, n)
+    mcmc.run(k_nuts, gmm_params, fourier, n)
     mcmc.print_summary(exclude_deterministic=False)
 
     samples = mcmc.get_samples()

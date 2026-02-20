@@ -117,28 +117,22 @@ def main() -> None:
 
     t0 = time.time()
 
-    # Per-pixel mean shear and noise level
-    mean1 = jnp.mean(sim["eps1"], axis=-1)
-    mean2 = jnp.mean(sim["eps2"], axis=-1)
-    sigma_patch = SHAPE_NOISE / jnp.sqrt(N_GAL_PER_PIX)
-    print(f"  Patch posterior sigma = {float(sigma_patch):.6f}")
-
     # Pre-compute Fourier grids
     fourier = _fourier_setup(GRID_SIZE, PIXEL_SCALE)
 
-    print(f"  Running joint NUTS ({N_JOINT_WARMUP} warmup + "
+    print(f"  Step 1: Per-pixel GMM VI on full galaxy catalog")
+    print(f"  Step 2: Joint NUTS ({N_JOINT_WARMUP} warmup + "
           f"{N_JOINT_SAMPLES} samples, {GRID_SIZE}x{GRID_SIZE}+2 = "
-          f"{GRID_SIZE*GRID_SIZE+2} dims)...")
+          f"{GRID_SIZE*GRID_SIZE+2} dims)")
     print("  (First call includes JIT compilation)")
     hierarchical_samples = run_hierarchical_pipeline(
-        mean1,
-        mean2,
-        float(sigma_patch),
+        sim["eps1"],
+        sim["eps2"],
         k_hier,
         fourier=fourier,
     )
     jax.block_until_ready(hierarchical_samples["omega_m"])
-    print(f"  Field-level NUTS done in {time.time() - t0:.1f}s")
+    print(f"  Field-level pipeline done in {time.time() - t0:.1f}s")
 
     # Posterior mean shear reconstruction for visualization
     gamma1_recon, gamma2_recon = posterior_sample_shear(hierarchical_samples, fourier, index=-1)

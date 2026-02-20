@@ -16,6 +16,29 @@ from .config import (
 from .power_spectrum import cl_model
 
 
+def _mobius_transform(
+    e_int_1: jnp.ndarray,
+    e_int_2: jnp.ndarray,
+    g1: jnp.ndarray,
+    g2: jnp.ndarray,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Apply Möbius lensing transformation to intrinsic ellipticities.
+
+    e_obs = (e_int + g) / (1 + conj(g) * e_int)
+
+    Args:
+        e_int_1, e_int_2: Intrinsic ellipticity components.
+        g1, g2: Reduced shear components.
+
+    Returns:
+        Tuple (e_obs_1, e_obs_2).
+    """
+    e_int = e_int_1 + 1j * e_int_2
+    g = g1 + 1j * g2
+    e_obs = (e_int + g) / (1.0 + jnp.conj(g) * e_int)
+    return jnp.real(e_obs), jnp.imag(e_obs)
+
+
 def _ell_grid(n: int, delta: float) -> jnp.ndarray:
     """Compute 2-D multipole grid from pixel grid parameters.
 
@@ -109,17 +132,22 @@ def simulate_shear_catalog(
     gamma1 = jnp.real(gamma)
     gamma2 = jnp.imag(gamma)
 
-    # Galaxy catalog: eps_i = g_p + noise
-    noise1 = jax.random.normal(k3, (n, n, n_gal)) * sigma_eps
+    # Reduced shear: g = gamma / (1 - kappa)
+    g1 = gamma1 / (1.0 - kappa)
+    g2 = gamma2 / (1.0 - kappa)
+
+    # Galaxy catalog: Möbius lensing of intrinsic ellipticities
     k4 = jax.random.fold_in(k3, 1)
-    noise2 = jax.random.normal(k4, (n, n, n_gal)) * sigma_eps
-    eps1 = gamma1[..., None] + noise1
-    eps2 = gamma2[..., None] + noise2
+    e_int_1 = jax.random.normal(k3, (n, n, n_gal)) * sigma_eps
+    e_int_2 = jax.random.normal(k4, (n, n, n_gal)) * sigma_eps
+    eps1, eps2 = _mobius_transform(e_int_1, e_int_2, g1[..., None], g2[..., None])
 
     return {
         "kappa": kappa,
         "gamma1": gamma1,
         "gamma2": gamma2,
+        "g1": g1,
+        "g2": g2,
         "eps1": eps1,
         "eps2": eps2,
         "ell2d": ell2d,
