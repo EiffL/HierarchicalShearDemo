@@ -1,8 +1,8 @@
 # Hierarchical Shear Inference Demo
 
-Comparing two approaches to cosmological parameter inference from weak gravitational lensing shear data: a classical **pseudo-C&#8467;** power spectrum pipeline and a **joint field-level NUTS** sampler that infers the convergence field and cosmological parameters simultaneously.
+Comparing two approaches to cosmological parameter inference from weak gravitational lensing shear data: a classical **pseudo-C&#8467;** power spectrum pipeline and a **field-level NUTS** sampler with **per-pixel GMM variational inference** that infers the convergence field and cosmological parameters simultaneously using the physically correct Möbius lensing model.
 
-Both pipelines operate on the same simulated galaxy shear catalog and produce posterior constraints on the matter density parameter &Omega;<sub>m</sub> and the fluctuation amplitude &sigma;<sub>8</sub>, as well as the derived combination S<sub>8</sub> = &sigma;<sub>8</sub>&radic;(&Omega;<sub>m</sub>/0.3).
+Both pipelines operate on the same simulated galaxy shear catalog — generated with the full **reduced shear + Möbius lensing** transformation — and produce posterior constraints on the matter density parameter &Omega;<sub>m</sub> and the fluctuation amplitude &sigma;<sub>8</sub>, as well as the derived combination S<sub>8</sub> = &sigma;<sub>8</sub>&radic;(&Omega;<sub>m</sub>/0.3).
 
 <p align="center">
   <img src="plots/cosmo_comparison_corner.png" width="85%"/>
@@ -17,22 +17,23 @@ This demo implements the full pipeline from simulation to posterior inference:
 ```mermaid
 flowchart LR
     subgraph Simulation
-        A[Draw Gaussian κ field] --> B["Kaiser-Squires: κ → (γ₁, γ₂)"]
-        B --> C[Add shape noise → galaxy catalog]
+        A[Draw Gaussian κ field] --> B["Kaiser-Squires: κ → γ"]
+        B --> C["Reduced shear: g = γ/(1−κ)"]
+        C --> D["Möbius lensing: e = (e_int+g)/(1+g*e_int)"]
     end
     subgraph Pipeline A: Pseudo-Cℓ
-        C --> D[Pixel-average ellipticities]
-        D --> E[FFT → E/B decomposition]
-        E --> F[Bin E-mode power in ℓ]
-        F --> G["NUTS sampling of (S₈, Ωₘ)"]
+        D --> E[Pixel-average ellipticities]
+        E --> F[FFT → E/B decomposition]
+        F --> G[Bin E-mode power in ℓ]
+        G --> H["NUTS sampling of (S₈, Ωₘ)"]
     end
     subgraph Pipeline B: Field-level NUTS
-        C --> H[Per-pixel interim posteriors]
-        H --> I["Joint NUTS over (z, S₈, Ωₘ)"]
-        I --> J[Posterior mean κ → shear reconstruction]
+        D --> I["Per-pixel GMM VI\n(with interim prior)"]
+        I --> J["Joint NUTS over (z, S₈, Ωₘ)\nlog q(g) − log p_interim(g)"]
+        J --> K[Posterior mean κ → shear reconstruction]
     end
-    G --> M[Compare posteriors]
-    J --> M
+    H --> M[Compare posteriors]
+    K --> M
 ```
 
 ## The Physics
@@ -44,6 +45,18 @@ Gravitational lensing shear (&gamma;<sub>1</sub>, &gamma;<sub>2</sub>) is a **sp
 $$\tilde{\gamma}(\boldsymbol{\ell}) = D(\boldsymbol{\ell}) \, \tilde{\kappa}(\boldsymbol{\ell}), \qquad D(\boldsymbol{\ell}) = \frac{\ell_x^2 - \ell_y^2 + 2i\,\ell_x \ell_y}{|\boldsymbol{\ell}|^2}$$
 
 This ensures that a pure convergence field produces **only E-mode** shear (no B-modes), analogous to the curl-free property of a gradient field. The simulation generates shear correctly via this relation, and B-mode power serves as a null test.
+
+### Möbius Lensing
+
+Galaxies are not observed with the shear &gamma; directly but with the **reduced shear** $g = \gamma / (1 - \kappa)$, combined with their intrinsic ellipticity via the Möbius transformation:
+
+$$e_\mathrm{obs} = \frac{e_\mathrm{int} + g}{1 + g^* \, e_\mathrm{int}}$$
+
+where $e_\mathrm{int} \sim \mathcal{N}(0, \sigma_e^2 \, \mathbf{I})$ per component (Rayleigh magnitude, uniform orientation). This non-linear transformation means the per-galaxy log-likelihood is:
+
+$$\log p(e_\mathrm{obs} \mid g) = -\frac{|e_s|^2}{2\sigma^2} - \log(2\pi\sigma^2) + 2\log(1 - |g|^2) - 2\log|1 - g^* \, e_\mathrm{obs}|^2$$
+
+where $e_s = (e_\mathrm{obs} - g) / (1 - g^* \, e_\mathrm{obs})$ is the inferred source ellipticity. In the weak-lensing regime ($|\kappa| \ll 1$), $g \approx \gamma$ and this reduces to the standard linear model, but the full Möbius form is used throughout for correctness.
 
 <p align="center">
   <img src="plots/cosmo_shear_whiskers.png" width="50%"/>
@@ -85,17 +98,19 @@ flowchart TD
 
 ## Pipeline B: Field-level NUTS
 
-The field-level approach jointly samples the convergence field and cosmological parameters using a **non-centered parameterization** that is amenable to gradient-based NUTS sampling in ~1000 dimensions.
+The field-level approach jointly samples the convergence field and cosmological parameters using a **non-centered parameterization** that is amenable to gradient-based NUTS sampling in ~16,000 dimensions. Because the Möbius lensing model makes the per-pixel likelihood non-Gaussian, the pipeline has two stages: **GMM variational inference** to compress the galaxy-level data, followed by **joint NUTS sampling**.
 
-### From interim posteriors to field-level inference
+### Stage 1: Per-pixel GMM variational inference
 
-The key insight from [Schneider et al. (2015)](https://doi.org/10.1088/0004-637X/807/1/87) is that per-patch (per-pixel) posteriors on shear can serve as **sufficient data summaries** for hierarchical cosmological inference. In this demo, each pixel has $n_\mathrm{gal}$ observed ellipticities $\varepsilon_i = \gamma_p + n_i$ with i.i.d. noise $n_i \sim \mathcal{N}(0, \sigma_\varepsilon^2)$. The analytic interim posterior on the shear in pixel $p$ is:
+The key insight from [Schneider et al. (2015)](https://doi.org/10.1088/0004-637X/807/1/87) is that per-pixel posteriors on shear can serve as **sufficient data summaries** for hierarchical cosmological inference. With the Möbius lensing model, the per-pixel likelihood $p(\{e_i\} \mid g)$ over $n_\mathrm{gal}$ galaxies is non-Gaussian, so we approximate it using a $K$-component **Gaussian mixture model** (GMM).
 
-$$\gamma_p \mid \{\varepsilon_i\} \sim \mathcal{N}\!\left(\bar{\varepsilon}_p,\; \sigma_\mathrm{patch}^2\right), \qquad \sigma_\mathrm{patch} = \frac{\sigma_\varepsilon}{\sqrt{n_\mathrm{gal}}}$$
+To regularize the VI optimization, we fit the GMM to the **interim posterior** rather than the raw likelihood:
 
-where $\bar{\varepsilon}_p$ is the per-pixel mean ellipticity. This Gaussian interim posterior is the likelihood for the field-level stage: the pixel-averaged data $\bar{\varepsilon}_p$ are sufficient statistics, and the field-level model conditions on them directly.
+$$q(g) \approx p(\{e_i\} \mid g) \times p_\mathrm{interim}(g), \qquad p_\mathrm{interim}(g) = \mathcal{N}(0, \sigma_\mathrm{interim}^2 \, \mathbf{I})$$
 
-### Non-centered generative model
+The GMM parameters (weights, means, Cholesky-factored covariances) are optimized by maximizing the reparameterized ELBO using `optax.adam` + `jax.lax.scan`. The interim prior ($\sigma_\mathrm{interim} = 0.15$, ~3&times; wider than the posterior) ensures the VI converges quickly with correct posterior widths — without it, the GMM components collapse to overly narrow distributions that bias the downstream cosmological inference.
+
+### Stage 2: Joint NUTS with interim prior correction
 
 Rather than sampling the convergence field $\kappa$ directly (which would be strongly correlated with the cosmological parameters through the power spectrum), we use a **non-centered parameterization** with a white-noise latent field $z$:
 
@@ -103,13 +118,17 @@ $$z_{ij} \sim \mathcal{N}(0, 1) \quad \text{(i.i.d. standard normal on the } n \
 
 $$\tilde{\kappa}(\boldsymbol{\ell}) = \sqrt{\frac{C_\ell(\Omega_m, \sigma_8)}{\mathcal{A}}} \; \tilde{z}(\boldsymbol{\ell})$$
 
-$$\tilde{\gamma}(\boldsymbol{\ell}) = D(\boldsymbol{\ell}) \, \tilde{\kappa}(\boldsymbol{\ell})$$
+$$\tilde{\gamma}(\boldsymbol{\ell}) = D(\boldsymbol{\ell}) \, \tilde{\kappa}(\boldsymbol{\ell}), \qquad g_p = \frac{\gamma_p}{1 - \kappa_p}$$
 
-$$\bar{\varepsilon}_p \sim \mathcal{N}\!\left(\gamma_p,\; \sigma_\mathrm{patch}^2\right)$$
+The effective per-pixel log-likelihood used by NUTS is the GMM approximation with the interim prior subtracted:
+
+$$\log p_\mathrm{eff}(g_p) = \log q(g_p) - \log p_\mathrm{interim}(g_p)$$
+
+This recovers the data log-likelihood $\log p(\{e_i\} \mid g_p)$ up to a constant: the GMM was fitted to $p(\mathrm{data}|g) \times p_\mathrm{interim}(g)$, so dividing out $p_\mathrm{interim}$ leaves just the data term. The total log-likelihood sums over all pixels.
 
 where $\tilde{z} = \mathrm{FFT}(z)$, $\mathcal{A} = (n \, \Delta)^2$ is the survey area, and $\gamma_p = \mathrm{IFFT}(\tilde{\gamma})$ evaluated at pixel $p$. The normalization $\sqrt{C_\ell / \mathcal{A}}$ accounts for the fact that $|\tilde{z}(\boldsymbol{\ell})|^2$ has expectation $n^2$ (from the unnormalized FFT of $n^2$ i.i.d. unit normals), producing the correct field power $\mathbb{E}[|\tilde{\kappa}(\boldsymbol{\ell})|^2] = C_\ell \, n^2 / \mathcal{A}$.
 
-The total parameter space is $n^2 + 2 = 1026$ dimensions (for $n = 32$). The non-centered parameterization decouples the prior on $z$ from the cosmological parameters, making the posterior geometry more amenable to NUTS. Cosmology enters only through the deterministic coloring $\sqrt{C_\ell}$, so the sampler can efficiently adapt its mass matrix to the different scales of the $z$ field and the cosmological parameters.
+The total parameter space is $n^2 + 2 = 16{,}386$ dimensions (for $n = 128$). The non-centered parameterization decouples the prior on $z$ from the cosmological parameters, making the posterior geometry more amenable to NUTS. Cosmology enters only through the deterministic coloring $\sqrt{C_\ell}$, so the sampler can efficiently adapt its mass matrix to the different scales of the $z$ field and the cosmological parameters.
 
 ### NUTS configuration
 
@@ -132,7 +151,7 @@ The field-level sampler produces **posterior samples of the convergence field** 
 .venv/bin/python cosmology_inference_demo.py
 ```
 
-The virtualenv (symlinked to the parent SHINE project) contains JAX, NumPyro, matplotlib, and scipy. The demo takes ~1 minute on a modern CPU.
+The virtualenv (symlinked to the parent SHINE project) contains JAX, NumPyro, optax, matplotlib, and scipy. The demo takes ~2 minutes on a modern CPU (dominated by the per-pixel GMM VI step).
 
 **Output:** plots saved to `plots/`, verification checks printed to stdout.
 
@@ -140,20 +159,23 @@ The virtualenv (symlinked to the parent SHINE project) contains JAX, NumPyro, ma
 
 ```mermaid
 flowchart BT
-    config["config.py\n─────────\nGrid, noise, cosmology\nconstants"]
+    config["config.py\n─────────\nGrid, noise, cosmology\nVI & sampler settings"]
     ps["power_spectrum.py\n─────────\ncl_model(ℓ, Ωₘ, σ₈)"]
-    sim["simulation.py\n─────────\nGaussian κ → spin-2 γ\n→ noisy galaxy catalog"]
+    sim["simulation.py\n─────────\nGaussian κ → spin-2 γ\nMöbius lensing → catalog"]
     cl["classical.py\n─────────\nPseudo-Cℓ estimation\nE/B decomposition\nNUTS inference"]
-    hi["hierarchical.py\n─────────\nNon-centered z → κ → γ\nJoint NUTS inference\nPosterior mean shear"]
+    vi["vi_gmm.py\n─────────\nPer-pixel GMM VI\nMöbius log-likelihood\nInterim prior correction"]
+    hi["hierarchical.py\n─────────\nNon-centered z → κ → g\nGMM-based joint NUTS\nPosterior mean shear"]
     pl["plotting.py\n─────────\nCorner, shear maps\npower spectra, whiskers"]
     ve["verification.py\n─────────\nCI checks, S₈ agreement\nB-mode null test"]
     demo["cosmology_inference_demo.py\n─────────\nEntry point: run both\npipelines and compare"]
 
     config --> ps
+    config --> vi
     ps --> sim
     ps --> cl
     ps --> hi
     ps --> pl
+    vi --> hi
     sim --> demo
     cl --> demo
     hi --> demo
@@ -163,11 +185,12 @@ flowchart BT
 
 | Module | Role |
 |--------|------|
-| `config.py` | All constants: grid size, noise levels, true cosmology, sampler settings |
+| `config.py` | All constants: grid size, noise levels, true cosmology, VI settings, sampler settings |
 | `power_spectrum.py` | Parametric C<sub>&#8467;</sub>(&Omega;<sub>m</sub>, &sigma;<sub>8</sub>) model |
-| `simulation.py` | Gaussian &kappa; field, Kaiser-Squires shear, noisy galaxy catalog |
+| `simulation.py` | Gaussian &kappa; field, Kaiser-Squires shear, reduced shear, Möbius lensing galaxy catalog |
 | `classical.py` | E-mode pseudo-C<sub>&#8467;</sub> estimation, Gaussian likelihood, NUTS |
-| `hierarchical.py` | Non-centered field-level model, joint NUTS over (z, S<sub>8</sub>, &Omega;<sub>m</sub>), posterior mean shear |
+| `vi_gmm.py` | Per-pixel GMM variational inference with interim prior, Möbius log-likelihood, ELBO optimization |
+| `hierarchical.py` | Two-stage field-level pipeline: GMM VI + joint NUTS over (z, S<sub>8</sub>, &Omega;<sub>m</sub>) with interim prior correction |
 | `plotting.py` | Density contour corner plots, shear maps, power spectra, whisker plots |
 | `verification.py` | Truth-in-CI checks, cross-method S<sub>8</sub> agreement, B-mode null test |
 
@@ -175,14 +198,17 @@ flowchart BT
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| Grid size | 32 &times; 32 | Pixels per side |
-| Pixel scale | 2.0 arcmin | Angular size per pixel |
+| Grid size | 128 &times; 128 | Pixels per side |
+| Pixel scale | 1.0 arcmin | Angular size per pixel |
 | Galaxies/pixel | 30 | Number density |
 | Shape noise | 0.26 per component | Intrinsic ellipticity dispersion |
 | &Omega;<sub>m</sub> (true) | 0.3 | Matter density |
 | &sigma;<sub>8</sub> (true) | 0.8 | Fluctuation amplitude |
-| NUTS samples (pseudo-C&#8467;) | 500 warmup + 4000 | Classical pipeline |
-| NUTS samples (field-level) | 500 warmup + 1000 | Hierarchical pipeline (1026 dims) |
+| GMM components | 2 | Per-pixel mixture components |
+| VI steps | 2000 | ELBO optimization steps (converges in ~50) |
+| Interim prior &sigma; | 0.15 | Isotropic Gaussian on reduced shear |
+| NUTS samples (pseudo-C&#8467;) | 500 warmup + 2000 | Classical pipeline |
+| NUTS samples (field-level) | 500 warmup + 2000 | Hierarchical pipeline (16,386 dims) |
 
 ## References
 
