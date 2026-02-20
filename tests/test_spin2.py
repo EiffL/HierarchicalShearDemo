@@ -60,4 +60,16 @@ cross_corr = float(cross / jnp.sqrt(auto1 * auto2))
 print(f"gamma1-gamma2 cross-correlation: {cross_corr:.3f}")
 print(f"  Expected >0.1 for spin-2, ~0 for independent")
 
+# Test compute_eb_power function
+from cosmo_lib.classical import compute_eb_power
+eb = compute_eb_power(gamma1, gamma2, n=32, delta=2.0)
+mean_E = float(jnp.mean(eb["cl_E"]))
+mean_B = float(jnp.mean(eb["cl_B"]))
+print(f"\ncompute_eb_power check:")
+print(f"  Mean E-mode power: {mean_E:.2e}")
+print(f"  Mean B-mode power: {mean_B:.2e}")
+print(f"  B/E ratio: {mean_B/mean_E:.6f}")
+assert mean_B / mean_E < 0.01, f"FAIL: B/E too high"
+print("  compute_eb_power check passed!")
+
 print("\nAll checks passed!")
