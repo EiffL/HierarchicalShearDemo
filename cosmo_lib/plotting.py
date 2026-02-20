@@ -11,19 +11,48 @@ from .gibbs import GibbsOutput
 from .power_spectrum import cl_model
 
 
+def _plot_contours(ax, x, y, color, label, n_bins=40):
+    """Plot 68% and 95% density contours from 2D samples."""
+    from scipy.ndimage import gaussian_filter
+
+    # 2D histogram
+    x_range = (np.percentile(x, 0.5), np.percentile(x, 99.5))
+    y_range = (np.percentile(y, 0.5), np.percentile(y, 99.5))
+    H, xedges, yedges = np.histogram2d(
+        x, y, bins=n_bins, range=[x_range, y_range],
+    )
+    H = gaussian_filter(H, sigma=1.5)
+
+    # Find levels enclosing 68% and 95% of the density
+    H_sorted = np.sort(H.ravel())[::-1]
+    H_cumsum = np.cumsum(H_sorted) / H_sorted.sum()
+    level_68 = H_sorted[np.searchsorted(H_cumsum, 0.68)]
+    level_95 = H_sorted[np.searchsorted(H_cumsum, 0.95)]
+
+    xc = 0.5 * (xedges[:-1] + xedges[1:])
+    yc = 0.5 * (yedges[:-1] + yedges[1:])
+
+    ax.contourf(xc, yc, H.T, levels=[level_95, level_68, H.max()],
+                colors=[color], alpha=[0.15, 0.35])
+    ax.contour(xc, yc, H.T, levels=[level_95, level_68],
+               colors=[color], linewidths=1.2)
+    # Invisible line for legend
+    ax.plot([], [], color=color, lw=2, label=label)
+
+
 def plot_corner_comparison(
     classical_samples: dict,
     gibbs_chain: GibbsOutput,
     n_burn: int = N_GIBBS_BURN,
 ) -> None:
-    """Overlay (Omega_m, sigma_8) posteriors from both methods with S_8 degeneracy.
+    """Overlay (Omega_m, sigma_8, S_8) posteriors from both methods.
 
     Args:
         classical_samples: Dict with 'omega_m' and 'sigma_8' arrays from NUTS.
         gibbs_chain: GibbsOutput from the Gibbs sampler.
         n_burn: Number of burn-in samples to discard from Gibbs chain.
     """
-    fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
 
     om_cl = np.array(classical_samples["omega_m"])
     s8_cl = np.array(classical_samples["sigma_8"])
@@ -33,6 +62,9 @@ def plot_corner_comparison(
     # Derived S_8
     s8_derived_cl = s8_cl * np.sqrt(om_cl / 0.3)
     s8_derived_gi = s8_gi * np.sqrt(om_gi / 0.3)
+    s8_true_val = SIGMA_8_TRUE * np.sqrt(OMEGA_M_TRUE / 0.3)
+
+    # --- Top row: marginals ---
 
     # Omega_m marginal
     ax = axes[0, 0]
@@ -54,48 +86,52 @@ def plot_corner_comparison(
     ax.legend(fontsize=9)
     ax.set_title(r"$\sigma_8$ marginal")
 
-    # Joint contour
-    ax = axes[1, 0]
-    ax.scatter(om_cl, s8_cl, s=1, alpha=0.1, color="C0", rasterized=True)
-    ax.scatter(om_gi, s8_gi, s=1, alpha=0.1, color="C1", rasterized=True)
-    ax.plot(OMEGA_M_TRUE, SIGMA_8_TRUE, "k+", ms=15, mew=2, label="Truth")
-
-    # S_8 degeneracy line
-    om_line = np.linspace(0.15, 0.55, 100)
-    s8_true_derived = SIGMA_8_TRUE * np.sqrt(OMEGA_M_TRUE / 0.3)
-    s8_line = s8_true_derived / np.sqrt(om_line / 0.3)
-    ax.plot(om_line, s8_line, "k-", alpha=0.4, lw=1, label=r"$S_8$ degeneracy")
-    ax.set_xlabel(r"$\Omega_m$")
-    ax.set_ylabel(r"$\sigma_8$")
-    ax.legend(fontsize=9)
-    ax.set_title(r"$\Omega_m$ vs $\sigma_8$")
-    ax.set_xlim(0.1, 0.6)
-    ax.set_ylim(0.4, 1.2)
-
     # S_8 marginal
-    ax = axes[1, 1]
-    ax.hist(
-        s8_derived_cl,
-        bins=40,
-        density=True,
-        alpha=0.6,
-        color="C0",
-        label="Pseudo-Cℓ",
-    )
-    ax.hist(
-        s8_derived_gi,
-        bins=40,
-        density=True,
-        alpha=0.6,
-        color="C1",
-        label="Gibbs+IS",
-    )
-    s8_true_val = SIGMA_8_TRUE * np.sqrt(OMEGA_M_TRUE / 0.3)
+    ax = axes[0, 2]
+    ax.hist(s8_derived_cl, bins=40, density=True, alpha=0.6, color="C0",
+            label="Pseudo-Cℓ")
+    ax.hist(s8_derived_gi, bins=40, density=True, alpha=0.6, color="C1",
+            label="Gibbs+IS")
     ax.axvline(s8_true_val, color="k", ls="--", lw=1.5, label="Truth")
     ax.set_xlabel(r"$S_8 = \sigma_8 \sqrt{\Omega_m / 0.3}$")
     ax.set_ylabel("Density")
     ax.legend(fontsize=9)
     ax.set_title(r"$S_8$ marginal")
+
+    # --- Bottom row: joint contours ---
+
+    # Omega_m vs sigma_8
+    ax = axes[1, 0]
+    _plot_contours(ax, om_cl, s8_cl, "C0", "Pseudo-Cℓ")
+    _plot_contours(ax, om_gi, s8_gi, "C1", "Gibbs+IS")
+    ax.plot(OMEGA_M_TRUE, SIGMA_8_TRUE, "k+", ms=15, mew=2, label="Truth")
+    om_line = np.linspace(0.10, 0.60, 100)
+    s8_line = s8_true_val / np.sqrt(om_line / 0.3)
+    ax.plot(om_line, s8_line, "k-", alpha=0.4, lw=1, label=r"$S_8$ degeneracy")
+    ax.set_xlabel(r"$\Omega_m$")
+    ax.set_ylabel(r"$\sigma_8$")
+    ax.legend(fontsize=9)
+    ax.set_title(r"$\Omega_m$ vs $\sigma_8$")
+
+    # S_8 vs Omega_m
+    ax = axes[1, 1]
+    _plot_contours(ax, om_cl, s8_derived_cl, "C0", "Pseudo-Cℓ")
+    _plot_contours(ax, om_gi, s8_derived_gi, "C1", "Gibbs+IS")
+    ax.plot(OMEGA_M_TRUE, s8_true_val, "k+", ms=15, mew=2, label="Truth")
+    ax.set_xlabel(r"$\Omega_m$")
+    ax.set_ylabel(r"$S_8$")
+    ax.legend(fontsize=9)
+    ax.set_title(r"$\Omega_m$ vs $S_8$")
+
+    # S_8 vs sigma_8
+    ax = axes[1, 2]
+    _plot_contours(ax, s8_cl, s8_derived_cl, "C0", "Pseudo-Cℓ")
+    _plot_contours(ax, s8_gi, s8_derived_gi, "C1", "Gibbs+IS")
+    ax.plot(SIGMA_8_TRUE, s8_true_val, "k+", ms=15, mew=2, label="Truth")
+    ax.set_xlabel(r"$\sigma_8$")
+    ax.set_ylabel(r"$S_8$")
+    ax.legend(fontsize=9)
+    ax.set_title(r"$\sigma_8$ vs $S_8$")
 
     plt.suptitle(
         "Cosmological Posterior Comparison: Pseudo-Cℓ vs Gibbs+IS",
@@ -103,9 +139,9 @@ def plot_corner_comparison(
         fontweight="bold",
     )
     plt.tight_layout()
-    plt.savefig("cosmo_comparison_corner.png", dpi=150, bbox_inches="tight")
+    plt.savefig("plots/cosmo_comparison_corner.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print("Saved cosmo_comparison_corner.png")
+    print("Saved plots/cosmo_comparison_corner.png")
 
 
 def plot_shear_maps(
@@ -183,9 +219,9 @@ def plot_shear_maps(
         fontweight="bold",
     )
     plt.tight_layout()
-    plt.savefig("cosmo_comparison_shear_maps.png", dpi=150, bbox_inches="tight")
+    plt.savefig("plots/cosmo_comparison_shear_maps.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print("Saved cosmo_comparison_shear_maps.png")
+    print("Saved plots/cosmo_comparison_shear_maps.png")
 
 
 def plot_power_spectrum(
@@ -230,9 +266,9 @@ def plot_power_spectrum(
     ax.grid(True, alpha=0.3, which="both")
 
     plt.tight_layout()
-    plt.savefig("cosmo_comparison_power_spectrum.png", dpi=150, bbox_inches="tight")
+    plt.savefig("plots/cosmo_comparison_power_spectrum.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print("Saved cosmo_comparison_power_spectrum.png")
+    print("Saved plots/cosmo_comparison_power_spectrum.png")
 
 
 def plot_shear_whiskers(
@@ -283,6 +319,6 @@ def plot_shear_whiskers(
     ax.set_ylabel("pixel y")
 
     plt.tight_layout()
-    plt.savefig("cosmo_shear_whiskers.png", dpi=150, bbox_inches="tight")
+    plt.savefig("plots/cosmo_shear_whiskers.png", dpi=150, bbox_inches="tight")
     plt.close()
-    print("Saved cosmo_shear_whiskers.png")
+    print("Saved plots/cosmo_shear_whiskers.png")

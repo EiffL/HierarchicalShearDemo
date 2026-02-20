@@ -103,7 +103,7 @@ def main() -> None:
         N_GAL_PER_PIX,
         SHAPE_NOISE,
     )
-    print(f"  Pseudo-Cℓ estimated ({N_ELL_BINS} bins)")
+    print(f"  Pseudo-Cℓ estimated ({len(cl_data['ell_bins'])} bins kept of {N_ELL_BINS})")
 
     print(f"  Running NUTS ({N_NUTS_WARMUP} warmup + {N_NUTS_SAMPLES} samples)...")
     classical_samples = run_classical_pipeline(

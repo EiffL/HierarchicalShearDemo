@@ -21,6 +21,7 @@ def estimate_pseudo_cl(
     n_gal: int,
     sigma_eps: float,
     n_bins: int = N_ELL_BINS,
+    n_min_modes: int = 5,
 ) -> dict:
     """Estimate binned E-mode pseudo-Cl from galaxy ellipticities.
 
@@ -28,6 +29,7 @@ def estimate_pseudo_cl(
       1. Average ellipticities per pixel -> noisy shear map.
       2. FFT -> E/B decomposition.
       3. Bin power spectrum in l and subtract noise bias.
+      4. Exclude bins with fewer than n_min_modes modes.
 
     Args:
         eps1: (n, n, n_gal) observed eps1.
@@ -37,13 +39,15 @@ def estimate_pseudo_cl(
         n_gal: Galaxies per pixel.
         sigma_eps: Shape noise per component.
         n_bins: Number of l-bins.
+        n_min_modes: Minimum number of Fourier modes per bin. Bins with
+            fewer modes are excluded from the output.
 
     Returns:
         Dictionary with keys:
-          - ell_bins: (n_bins,) bin centers.
-          - cl_hat: (n_bins,) noise-subtracted E-mode pseudo-Cl.
+          - ell_bins: (n_kept,) bin centers.
+          - cl_hat: (n_kept,) noise-subtracted E-mode pseudo-Cl.
           - cl_noise: scalar noise bias per mode.
-          - n_modes: (n_bins,) number of modes per bin.
+          - n_modes: (n_kept,) number of modes per bin.
           - gamma1_obs, gamma2_obs: (n, n) mean shear maps.
     """
     # Mean shear per pixel
@@ -57,7 +61,7 @@ def estimate_pseudo_cl(
     g1_fft = jnp.fft.fft2(gamma1_obs)
     g2_fft = jnp.fft.fft2(gamma2_obs)
 
-    # E/B decomposition
+    # E/B decomposition via spin-2 Kaiser-Squires
     freq = jnp.fft.fftfreq(n, d=delta_rad)
     kx, ky = jnp.meshgrid(freq, freq, indexing="ij")
     ell_sq = kx**2 + ky**2
@@ -66,14 +70,18 @@ def estimate_pseudo_cl(
     D_ell = D_ell.at[0, 0].set(0.0 + 0j)
 
     gamma_fft = g1_fft + 1j * g2_fft
-    kappa_E_fft = jnp.conj(D_ell) * gamma_fft
+    psi = jnp.conj(D_ell) * gamma_fft  # kappa_E + i*kappa_B
+
+    # Proper E-mode separation: kappa_E(l) = [psi(l) + conj(psi(-l))] / 2
+    psi_neg = jnp.roll(jnp.flip(psi), (1, 1), axis=(0, 1))
+    kappa_E_fft = (psi + jnp.conj(psi_neg)) / 2.0
 
     # E-mode power spectrum
     ell2d = 2.0 * jnp.pi * jnp.sqrt(kx**2 + ky**2)
     power2d = jnp.abs(kappa_E_fft) ** 2 * area / (n**2)
 
-    # Noise bias
-    noise_per_mode = 2.0 * sigma_eps**2 / n_gal * area
+    # Noise bias (E-mode only: half of E+B noise)
+    noise_per_mode = sigma_eps**2 / n_gal * area
 
     # Bin in l
     ell_flat = ell2d.ravel()
@@ -108,11 +116,21 @@ def estimate_pseudo_cl(
             cl_hat_list.append(0.0)
             n_modes_list.append(1)
 
+    ell_centers = np.array(ell_centers)
+    cl_hat_arr = np.array(cl_hat_list)
+    n_modes_arr = np.array(n_modes_list)
+
+    # Exclude bins with too few modes
+    keep = n_modes_arr >= n_min_modes
+    ell_centers = ell_centers[keep]
+    cl_hat_arr = cl_hat_arr[keep]
+    n_modes_arr = n_modes_arr[keep]
+
     return {
         "ell_bins": jnp.array(ell_centers),
-        "cl_hat": jnp.array(cl_hat_list),
+        "cl_hat": jnp.array(cl_hat_arr),
         "cl_noise": noise_per_mode,
-        "n_modes": jnp.array(n_modes_list),
+        "n_modes": jnp.array(n_modes_arr),
         "gamma1_obs": gamma1_obs,
         "gamma2_obs": gamma2_obs,
     }
@@ -213,6 +231,10 @@ def classical_model(
 ) -> None:
     """NumPyro model for pseudo-Cl Gaussian likelihood.
 
+    Samples (S_8, omega_m) with uniform priors, then derives sigma_8.
+    This avoids the prior-induced bias on S_8 that arises from sampling
+    (omega_m, sigma_8) directly with uniform priors.
+
     Likelihood:
         log p(C_hat_b | theta) = -1/2 sum_b (C_hat_b - C_b(theta))^2 / Var_b
     where Var_b = 2*(C_b(theta) + N_b)^2 / n_modes_b.
@@ -223,8 +245,11 @@ def classical_model(
         ell_bins: Bin center multipoles.
         cl_noise: Noise power per mode.
     """
+    s_8 = numpyro.sample("S_8", dist.Uniform(0.3, 1.2))
     omega_m = numpyro.sample("omega_m", dist.Uniform(0.1, 0.6))
-    sigma_8 = numpyro.sample("sigma_8", dist.Uniform(0.4, 1.2))
+
+    sigma_8 = s_8 / jnp.sqrt(omega_m / 0.3)
+    numpyro.deterministic("sigma_8", sigma_8)
 
     cl_theory = cl_model(ell_bins, omega_m, sigma_8)
     variance = 2.0 * (cl_theory + cl_noise) ** 2 / n_modes
@@ -251,9 +276,9 @@ def run_classical_pipeline(
         key: JAX PRNG key.
 
     Returns:
-        Dictionary with 'omega_m' and 'sigma_8' posterior sample arrays.
+        Dictionary with 'omega_m', 'sigma_8', and 'S_8' posterior sample arrays.
     """
-    kernel = NUTS(classical_model)
+    kernel = NUTS(classical_model, target_accept_prob=0.9)
     mcmc = MCMC(
         kernel,
         num_warmup=N_NUTS_WARMUP,
