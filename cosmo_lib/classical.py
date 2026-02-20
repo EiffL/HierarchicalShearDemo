@@ -118,6 +118,93 @@ def estimate_pseudo_cl(
     }
 
 
+def compute_eb_power(
+    gamma1: jnp.ndarray,
+    gamma2: jnp.ndarray,
+    n: int,
+    delta: float,
+    n_bins: int = N_ELL_BINS,
+) -> dict:
+    """Compute binned E-mode and B-mode power spectra from a shear field.
+
+    Uses the spin-2 E/B decomposition:
+        psi(l) = D*(l) * FFT(gamma1 + i*gamma2)
+        kappa_E(l) = [psi(l) + conj(psi(-l))] / 2
+        kappa_B(l) = [psi(l) - conj(psi(-l))] / (2i)
+
+    Args:
+        gamma1: (n, n) shear component 1.
+        gamma2: (n, n) shear component 2.
+        n: Grid size.
+        delta: Pixel scale in arcmin.
+        n_bins: Number of ell bins.
+
+    Returns:
+        Dictionary with keys:
+          - ell_bins: (n_bins,) bin centers.
+          - cl_E: (n_bins,) binned E-mode power.
+          - cl_B: (n_bins,) binned B-mode power.
+    """
+    delta_rad = jnp.deg2rad(delta / 60.0)
+    area = (n * delta_rad) ** 2
+
+    # Spin-2 FFT
+    gamma_fft = jnp.fft.fft2(gamma1 + 1j * gamma2)
+
+    # Kaiser-Squires kernel
+    freq = jnp.fft.fftfreq(n, d=delta_rad)
+    kx, ky = jnp.meshgrid(freq, freq, indexing="ij")
+    ell_sq = kx**2 + ky**2
+    ell_sq_safe = jnp.where(ell_sq > 0, ell_sq, 1.0)
+    D_ell = (kx**2 - ky**2 + 2j * kx * ky) / ell_sq_safe
+    D_ell = D_ell.at[0, 0].set(0.0 + 0j)
+
+    # E/B decomposition
+    psi = jnp.conj(D_ell) * gamma_fft
+    psi_neg = jnp.roll(jnp.flip(psi), (1, 1), axis=(0, 1))
+    kappa_E_fft = (psi + jnp.conj(psi_neg)) / 2.0
+    kappa_B_fft = (psi - jnp.conj(psi_neg)) / 2j
+
+    # Power spectra
+    power_E = jnp.abs(kappa_E_fft) ** 2 * area / n**2
+    power_B = jnp.abs(kappa_B_fft) ** 2 * area / n**2
+
+    # Ell grid
+    ell2d = 2.0 * jnp.pi * jnp.sqrt(kx**2 + ky**2)
+
+    # Bin in ell (same binning as estimate_pseudo_cl)
+    ell_flat = np.array(ell2d.ravel())
+    power_E_flat = np.array(power_E.ravel())
+    power_B_flat = np.array(power_B.ravel())
+
+    ell_min = 2.0 * np.pi / (n * delta_rad)
+    ell_max = np.pi / delta_rad
+    bin_edges = np.exp(np.linspace(np.log(ell_min), np.log(ell_max), n_bins + 1))
+
+    ell_centers = []
+    cl_E_list = []
+    cl_B_list = []
+
+    for i in range(n_bins):
+        mask = (ell_flat >= bin_edges[i]) & (ell_flat < bin_edges[i + 1])
+        mask[0] = False
+        nm = mask.sum()
+        if nm > 0:
+            ell_centers.append(np.mean(ell_flat[mask]))
+            cl_E_list.append(np.mean(power_E_flat[mask]))
+            cl_B_list.append(np.mean(power_B_flat[mask]))
+        else:
+            ell_centers.append(float(np.sqrt(bin_edges[i] * bin_edges[i + 1])))
+            cl_E_list.append(0.0)
+            cl_B_list.append(0.0)
+
+    return {
+        "ell_bins": jnp.array(ell_centers),
+        "cl_E": jnp.array(cl_E_list),
+        "cl_B": jnp.array(cl_B_list),
+    }
+
+
 def classical_model(
     cl_hat: jnp.ndarray,
     n_modes: jnp.ndarray,

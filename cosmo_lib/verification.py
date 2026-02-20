@@ -12,6 +12,7 @@ def run_verification(
     classical_samples: dict,
     gibbs_chain: GibbsOutput,
     gibbs_state: GibbsState,
+    eb_data: dict | None = None,
     n_burn: int = N_GIBBS_BURN,
     n_total: int = N_GIBBS,
 ) -> None:
@@ -76,5 +77,15 @@ def run_verification(
     acc_rate = float(gibbs_state.n_accepted) / n_total * 100
     status = "PASS" if 15 <= acc_rate <= 60 else "WARN"
     print(f"  [{status}] Acceptance rate: {acc_rate:.1f}%")
+
+    if eb_data is not None:
+        print("\n4. B-mode consistency (true shear field):")
+        cl_E = np.array(eb_data["cl_E"])
+        cl_B = np.array(eb_data["cl_B"])
+        mean_E = np.mean(cl_E[cl_E > 0])
+        mean_B = np.mean(np.abs(cl_B))
+        ratio = mean_B / mean_E if mean_E > 0 else float("inf")
+        status = "PASS" if ratio < 0.05 else "WARN"
+        print(f"  [{status}] Mean |B|/E ratio: {ratio:.4f} (expect < 0.05)")
 
     print("\n" + "=" * 70)
