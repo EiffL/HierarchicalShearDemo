@@ -233,3 +233,56 @@ def plot_power_spectrum(
     plt.savefig("cosmo_comparison_power_spectrum.png", dpi=150, bbox_inches="tight")
     plt.close()
     print("Saved cosmo_comparison_power_spectrum.png")
+
+
+def plot_shear_whiskers(
+    sim: dict,
+    stride: int = 1,
+) -> None:
+    """Plot shear sticks overlaid on the convergence field.
+
+    Each pixel gets a headless line segment with length proportional to |gamma|
+    and orientation angle = arctan2(gamma2, gamma1) / 2 (spin-2).
+
+    Args:
+        sim: Simulation dictionary (contains kappa, gamma1, gamma2).
+        stride: Plot every stride-th pixel (for readability on dense grids).
+    """
+    kappa = np.array(sim["kappa"])
+    gamma1 = np.array(sim["gamma1"])
+    gamma2 = np.array(sim["gamma2"])
+    n = kappa.shape[0]
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    # Convergence background
+    im = ax.imshow(kappa, origin="lower", cmap="RdBu_r", alpha=0.6,
+                   extent=[0, n, 0, n])
+    plt.colorbar(im, ax=ax, label=r"$\kappa$", shrink=0.8)
+
+    # Shear sticks
+    mag = np.sqrt(gamma1**2 + gamma2**2)
+    angle = 0.5 * np.arctan2(gamma2, gamma1)  # spin-2: half angle
+
+    # Normalize stick length for visibility
+    scale = 0.8 * stride / np.max(mag) if np.max(mag) > 0 else 1.0
+
+    for i in range(0, n, stride):
+        for j in range(0, n, stride):
+            dx = mag[i, j] * scale * np.cos(angle[i, j])
+            dy = mag[i, j] * scale * np.sin(angle[i, j])
+            cx, cy = j + 0.5, i + 0.5  # pixel center
+            ax.plot([cx - dx, cx + dx], [cy - dy, cy + dy],
+                    "k-", lw=0.8, alpha=0.8)
+
+    ax.set_xlim(0, n)
+    ax.set_ylim(0, n)
+    ax.set_aspect("equal")
+    ax.set_title(r"Shear whiskers on $\kappa$ field", fontsize=14, fontweight="bold")
+    ax.set_xlabel("pixel x")
+    ax.set_ylabel("pixel y")
+
+    plt.tight_layout()
+    plt.savefig("cosmo_shear_whiskers.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print("Saved cosmo_shear_whiskers.png")
