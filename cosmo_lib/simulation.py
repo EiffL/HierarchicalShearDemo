@@ -92,6 +92,11 @@ def simulate_shear_catalog(
     kappa = jnp.real(jnp.fft.ifft2(kappa_fft))
 
     # Kaiser-Squires: gamma_tilde(l) = D(l) * kappa_tilde(l)
+    # IMPORTANT: use FFT of the real kappa field (Hermitian) so that
+    # the resulting shear is a proper spin-2 field with correlated
+    # gamma1/gamma2 components.
+    kappa_fft_hermitian = jnp.fft.fft2(kappa)
+
     freq = jnp.fft.fftfreq(n, d=delta_rad)
     kx, ky = jnp.meshgrid(freq, freq, indexing="ij")
     ell_sq = kx**2 + ky**2
@@ -99,7 +104,7 @@ def simulate_shear_catalog(
     D_ell = (kx**2 - ky**2 + 2j * kx * ky) / ell_sq_safe
     D_ell = D_ell.at[0, 0].set(0.0 + 0j)
 
-    gamma_fft = D_ell * kappa_fft
+    gamma_fft = D_ell * kappa_fft_hermitian
     gamma = jnp.fft.ifft2(gamma_fft)
     gamma1 = jnp.real(gamma)
     gamma2 = jnp.imag(gamma)
